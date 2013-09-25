@@ -53,7 +53,7 @@
  */
  
 #include "button.h"
-#include "heartbeat.h"
+#include "task.h"
 #include "ringbuf.h"
 #include "statemachine.h"
 #include "statemachine_common.h"
@@ -69,7 +69,8 @@
  */
 
 #define MS_TICK 10
-#define BLINK_PERIOD 300
+#define BLINK_PERIOD_MS 300
+#define SYNC_PERIOD_MS (60UL * 1000)
 
 #define UP_PORT PORTB
 #define UP_PIN 0
@@ -106,6 +107,7 @@ typedef enum events EVENTS;
  */
 
 static void setupTimer(void);
+static void setupTasks(void);
 
 static void applicationTick(void);
 
@@ -118,11 +120,15 @@ static void startRead(void);
 static void startWrite(void);
 static void incDigit(void);
 static void decDigit(void);
+
 /*
  * Private Variables
  */
 
 static TMR8_TICK_CONFIG tick;
+
+static TASK heartbeatTask;
+static TASK timeSyncTask;
 
 static uint8_t unixTimeDigits[10];
 
@@ -157,11 +163,11 @@ int main(void)
 	
 	setupTimer();
 	
+	setupTasks();
+	
 	DS3231_Init();
 	
 	UC_BTN_Init(MS_TICK);
-	
-	Heartbeat_Init(MS_TICK, BLINK_PERIOD);
 	
 	/* All processing interrupt based from here*/
 	sei();
@@ -191,6 +197,21 @@ static void setupTimer(void)
 	TMR8_Tick_AddTimerConfig(&tick);
 }
 
+static void setupTasks(void)
+{
+	heartbeatTask.msTick = MS_TICK;
+	heartbeatTask.msPerBeat = BLINK_PERIOD_MS;
+	heartbeatTask.fn = NULL;
+	
+	Task_Init(&heartbeatTask);
+	
+	timeSyncTask.msTick = MS_TICK;
+	timeSyncTask.msPerBeat = SYNC_PERIOD_MS;
+	timeSyncTask.fn = NULL;
+	
+	Task_Init(&timeSyncTask);
+}
+
 static void applicationTick(void)
 {
 	BTN_STATE_ENUM up = IO_Read(UP_PORT, UP_PIN); // Read up button state;
@@ -206,9 +227,14 @@ static void applicationTick(void)
 	
 	updateDisplay();
 	
-	if (Heartbeat_Tick())
+	if (Task_Tick(&heartbeatTask))
 	{
 		s_BlinkState = !s_BlinkState;
+	}
+	
+	if (Task_Tick(&timeSyncTask))
+	{
+		SM_Event(sm_index, READ_START);
 	}
 }
 
