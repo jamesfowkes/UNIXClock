@@ -53,6 +53,7 @@
  */
  
 #include "button.h"
+#include "heartbeat.h"
 #include "ringbuf.h"
 #include "statemachine.h"
 #include "statemachine_common.h"
@@ -106,7 +107,7 @@ typedef enum events EVENTS;
 
 static void setupTimer(void);
 
-static void Application_Tick(uint16_t seconds);
+static void applicationTick(void);
 
 static void onChronodotUpdate(bool write);
 
@@ -128,9 +129,6 @@ static uint8_t unixTimeDigits[10];
 static uint8_t sm_index = 0;
 
 static bool s_BlinkState = false;
-
-static I2C_TRANSFER_DATA write;
-static I2C_TRANSFER_DATA read;
 
 static SM_ENTRY sm[] = {
 	{INIT,		READ_START,			startRead,		READING},
@@ -170,7 +168,10 @@ int main(void)
 
 	while (true)
 	{
-		continue;
+		if (TMR8_Tick_TestAndClear(&tick))
+		{
+			applicationTick();
+		}
 	}
 
 	return 0;
@@ -190,7 +191,7 @@ static void setupTimer(void)
 	TMR8_Tick_AddTimerConfig(&tick);
 }
 
-static void Application_Tick(uint16_t seconds)
+static void applicationTick(void)
 {
 	BTN_STATE_ENUM up = IO_Read(UP_PORT, UP_PIN); // Read up button state;
 	BTN_STATE_ENUM dn = IO_Read(DN_PORT, DN_PIN); // Read dn button state;
@@ -314,10 +315,12 @@ void UC_SelectDigit(int8_t selectedDigit)
 
 void UC_IncrementDigit(int8_t selectedDigit)
 {
+	(void)selectedDigit;
 	SM_Event(sm_index, BTN_UP);
 }
 
 void UC_DecrementDigit(int8_t selectedDigit)
 {
+	(void)selectedDigit;
 	SM_Event(sm_index, BTN_DN);
 }
