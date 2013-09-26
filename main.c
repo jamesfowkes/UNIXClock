@@ -53,7 +53,6 @@
  */
  
 #include "button.h"
-#include "task.h"
 #include "ringbuf.h"
 #include "statemachine.h"
 #include "statemachine_common.h"
@@ -68,9 +67,9 @@
  * Private Defines and Datatypes
  */
 
-#define MS_TICK 10
-#define BLINK_PERIOD_MS 300
-#define SYNC_PERIOD_MS (60UL * 1000)
+#define APP_TICK_MS 10
+#define BLINK_TICK_MS 300
+#define SYNC_TICK_MS (60UL * 1000)
 
 #define UP_PORT PORTB
 #define UP_PIN 0
@@ -107,7 +106,6 @@ typedef enum events EVENTS;
  */
 
 static void setupTimer(void);
-static void setupTasks(void);
 
 static void applicationTick(void);
 
@@ -125,10 +123,9 @@ static void decDigit(void);
  * Private Variables
  */
 
-static TMR8_TICK_CONFIG tick;
-
-static TASK heartbeatTask;
-static TASK timeSyncTask;
+static TMR8_TICK_CONFIG appTick;
+static TMR8_TICK_CONFIG heartbeatTick;
+static TMR8_TICK_CONFIG timeSyncTick;
 
 static uint8_t unixTimeDigits[10];
 
@@ -163,20 +160,28 @@ int main(void)
 	
 	setupTimer();
 	
-	setupTasks();
-	
 	DS3231_Init();
 	
-	UC_BTN_Init(MS_TICK);
+	UC_BTN_Init(APP_TICK_MS);
 	
 	/* All processing interrupt based from here*/
 	sei();
 
 	while (true)
 	{
-		if (TMR8_Tick_TestAndClear(&tick))
+		if (TMR8_Tick_TestAndClear(&appTick))
 		{
 			applicationTick();
+		}
+
+		if (TMR8_Tick_TestAndClear(&heartbeatTick))
+		{
+			s_BlinkState = !s_BlinkState;
+		}
+
+		if (TMR8_Tick_TestAndClear(&timeSyncTick))
+		{
+			SM_Event(sm_index, READ_START);
 		}
 	}
 
@@ -192,24 +197,17 @@ static void setupTimer(void)
 	CLK_Init(0);
 	TMR8_Tick_Init();
 
-	tick.reload = MS_TICK;
-	tick.active = true;
-	TMR8_Tick_AddTimerConfig(&tick);
-}
+	appTick.reload = APP_TICK_MS;
+	appTick.active = true;
+	TMR8_Tick_AddTimerConfig(&appTick);
 
-static void setupTasks(void)
-{
-	heartbeatTask.msTick = MS_TICK;
-	heartbeatTask.msPerBeat = BLINK_PERIOD_MS;
-	heartbeatTask.fn = NULL;
-	
-	Task_Init(&heartbeatTask);
-	
-	timeSyncTask.msTick = MS_TICK;
-	timeSyncTask.msPerBeat = SYNC_PERIOD_MS;
-	timeSyncTask.fn = NULL;
-	
-	Task_Init(&timeSyncTask);
+	heartbeatTick.reload = BLINK_TICK_MS;
+	heartbeatTick.active = true;
+	TMR8_Tick_AddTimerConfig(&heartbeatTick);
+
+	timeSyncTick.reload = SYNC_TICK_MS;
+	timeSyncTick.active = true;
+	TMR8_Tick_AddTimerConfig(&timeSyncTick);
 }
 
 static void applicationTick(void)
@@ -226,16 +224,7 @@ static void applicationTick(void)
 	}
 	
 	updateDisplay();
-	
-	if (Task_Tick(&heartbeatTask))
-	{
-		s_BlinkState = !s_BlinkState;
-	}
-	
-	if (Task_Tick(&timeSyncTask))
-	{
-		SM_Event(sm_index, READ_START);
-	}
+
 }
 
 static void onChronodotUpdate(bool write)
