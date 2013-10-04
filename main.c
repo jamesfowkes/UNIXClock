@@ -195,7 +195,7 @@ int main(void)
 static void setupTimer(void)
 {
 	CLK_Init(0);
-	TMR8_Tick_Init();
+	TMR8_Tick_Init(3, 0);
 
 	appTick.reload = APP_TICK_MS;
 	appTick.active = true;
