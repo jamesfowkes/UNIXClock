@@ -13,11 +13,11 @@
 #define NO_DIGIT (-1)
 
 bool UC_BTN_Init(uint8_t scanPeriodMs);
-void UC_BTN_Tick(BTN_STATE_ENUM up, BTN_STATE_ENUM dn, BTN_STATE_ENUM digit);
+void UC_BTN_Tick(BTN_STATE_ENUM up, BTN_STATE_ENUM digit);
 
 int8_t UC_SelectedDigit(void);
 
+void UC_SelectDigit(int8_t selectedDigit);
 void UC_IncrementDigit(int8_t selectedDigit);
-void UC_DecrementDigit(int8_t selectedDigit);
 
 #endif

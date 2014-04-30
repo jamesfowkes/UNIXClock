@@ -35,9 +35,6 @@
 void upBtnRepeat(void);
 void upBtnChange(BTN_STATE_ENUM state);
 
-void dnBtnRepeat(void);
-void dnBtnChange(BTN_STATE_ENUM state);
-
 void digitBtnRepeat(void);
 void digitBtnChange(BTN_STATE_ENUM state);
 
@@ -50,15 +47,6 @@ static BTN upButton =
 	.current_state = BTN_STATE_INACTIVE,
 	.change_state_callback = upBtnChange,
 	.repeat_callback = upBtnRepeat,
-	.max_repeat_count = BUTTON_REPEAT_COUNT,
-	.max_debounce_count = BUTTON_DEBOUNCE_COUNT
-};
-
-static BTN dnButton = 
-{
-	.current_state = BTN_STATE_INACTIVE,
-	.change_state_callback = dnBtnChange,
-	.repeat_callback = dnBtnRepeat,
 	.max_repeat_count = BUTTON_REPEAT_COUNT,
 	.max_debounce_count = BUTTON_DEBOUNCE_COUNT
 };
@@ -88,19 +76,17 @@ bool UC_BTN_Init(uint8_t scanPeriodMs)
 	s_scanPeriodMs = scanPeriodMs;
 	
 	success &= BTN_InitHandler(&upButton);
-	success &= BTN_InitHandler(&dnButton);
 	success &= BTN_InitHandler(&digitButton);
 	
 	return success;
 }
  
-void UC_BTN_Tick(BTN_STATE_ENUM up, BTN_STATE_ENUM dn, BTN_STATE_ENUM digit)
+void UC_BTN_Tick(BTN_STATE_ENUM up, BTN_STATE_ENUM digit)
 {
 	BTN_Update(&upButton, up);
-	BTN_Update(&dnButton, dn);
 	BTN_Update(&digitButton, digit);
 
-	if ((up == BTN_STATE_INACTIVE) && (dn == BTN_STATE_INACTIVE) && (digit == BTN_STATE_INACTIVE))
+	if ((up == BTN_STATE_INACTIVE) && (digit == BTN_STATE_INACTIVE))
 	{
 		if (s_selectedDigit != NO_DIGIT) // Selected digit != NO_DIGIT indicates non-idle state
 		{
@@ -109,8 +95,13 @@ void UC_BTN_Tick(BTN_STATE_ENUM up, BTN_STATE_ENUM dn, BTN_STATE_ENUM digit)
 			{
 				s_idleCount = 0;
 				s_selectedDigit = NO_DIGIT;
+				UC_SelectDigit(NO_DIGIT);
 			}
 		}
+	}
+	else
+	{
+		s_idleCount = 0;
 	}
 }
 
@@ -137,23 +128,10 @@ void upBtnChange(BTN_STATE_ENUM state)
 	}
 }
 
-void dnBtnRepeat(void)
-{
-	UC_DecrementDigit(s_selectedDigit);
-}
-
-void dnBtnChange(BTN_STATE_ENUM state)
-{
-	if (state == BTN_STATE_ACTIVE)
-	{
-		if (s_selectedDigit == NO_DIGIT) { s_selectedDigit = 0; }
-		dnBtnRepeat();
-	}
-}
-
 void digitBtnRepeat(void)
 {
 	s_selectedDigit = (s_selectedDigit < MAX_DIGIT_INDEX) ? s_selectedDigit + 1 : 0;
+	UC_SelectDigit(s_selectedDigit);
 }
 
 void digitBtnChange(BTN_STATE_ENUM state)

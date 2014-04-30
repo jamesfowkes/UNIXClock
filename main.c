@@ -35,33 +35,42 @@
 #include <avr/eeprom.h>
 
 /*
- * AVR Library Includes
- */
-
-#include "lib_i2c_common.h"
-#include "lib_clk.h"
-#include "lib_tmr8_tick.h"
-
-/*
  * Device Includes
  */
 
 #include "lib_ds3231.h"
+#include "lib_shiftregister_common.h"
+#include "lib_tlc5916.h"
 
 /*
  * Generic Library Includes
  */
- 
+
 #include "button.h"
 #include "ringbuf.h"
+#include "statemachinemanager.h"
 #include "statemachine.h"
-#include "statemachine_common.h"
+#include "seven_segment_map.h"
+
+/*
+ * AVR Library Includes
+ */
+
+#include "lib_i2c_common.h"
+#include "lib_i2c_config.h"
+#include "lib_clk.h"
+#include "lib_tmr8_tick.h"
+#include "lib_shiftregister.h"
+#include "lib_pcint.h"
+
+#include "util_bcd.h"
 
 /*
  * Local Application Includes
  */
 
 #include "unix_clock.h"
+#include "compiletime.h"
 
 /*
  * Private Defines and Datatypes
@@ -69,22 +78,46 @@
 
 #define APP_TICK_MS 10
 #define BLINK_TICK_MS 300
-#define SYNC_TICK_MS (60UL * 1000)
 
-#define UP_PORT PORTB
+// Button input
+#define eUP_PORT IO_PORTB
+#define UP_PINS PINB
 #define UP_PIN 0
-#define DN_PORT PORTB
-#define DN_PIN 1
-#define DIGIT_PORT PORTB
-#define DIGIT_PIN 2
+
+#define eDIGIT_PORT IO_PORTB
+#define DIGIT_PINS PINB
+#define DIGIT_PIN 1
+
+#define HB_PORT IO_PORTB
+#define HB_PIN 5
+
+// i2c pins
+#define I2C_SCL_PORT	IO_PORTC
+#define I2C_SCL_PIN		5
+#define I2C_SDA_PORT	IO_PORTC
+#define I2C_SDA_PIN		4
+
+// Shift register clock and data
+#define TLC_DATA_PORT PORTD
+#define eTLC_DATA_PORT IO_PORTD
+#define TLC_DATA_PIN 4
+#define TLC_CLK_PORT PORTD
+#define eTLC_CLK_PORT IO_PORTD
+#define TLC_CLK_PIN 5
+#define TLC_LATCH_PORT PORTD
+#define eTLC_LATCH_PORT IO_PORTD
+#define TLC_LATCH_PIN 3
+#define TLC_OE_PORT PORTD
+#define eTLC_OE_PORT IO_PORTD
+#define TLC_OE_PIN 2
+
+#define SECOND_TICK_PORT IO_PORTD
+#define SECOND_TICK_PIN 6
+#define SECOND_TICK_PCINT 22
 
 enum states
 {
-	INIT,
-	DISPLAY,
-	EDIT,
-	WRITING,
-	READING
+	DISPLAY, EDIT, WRITING
 };
 typedef enum states STATES;
 
@@ -92,10 +125,7 @@ enum events
 {
 	BTN_DIGIT_SELECT,
 	BTN_UP,
-	BTN_DN,
 	BTN_IDLE,
-	READ_START,
-	READ_COMPLETE,
 	WRITE_START,
 	WRITE_COMPLETE
 };
@@ -106,6 +136,9 @@ typedef enum events EVENTS;
  */
 
 static void setupTimer(void);
+static void setupIO(void);
+static void initialiseMap(void);
+static void setupStateMachine(void);
 
 static void applicationTick(void);
 
@@ -114,10 +147,11 @@ static void onChronodotUpdate(bool write);
 static void updateUnixTimeDigits(void);
 static void updateDisplay(void);
 
-static void startRead(void);
 static void startWrite(void);
 static void incDigit(void);
-static void decDigit(void);
+
+static void tlcOEFn(bool on);
+static void tlcLatchFn(bool on);
 
 /*
  * Private Variables
@@ -125,29 +159,44 @@ static void decDigit(void);
 
 static TMR8_TICK_CONFIG appTick;
 static TMR8_TICK_CONFIG heartbeatTick;
-static TMR8_TICK_CONFIG timeSyncTick;
 
-static uint8_t unixTimeDigits[10];
+static uint8_t unixTimeDigits[10] = COMPILE_TIME_DIGITS;
 
-static uint8_t sm_index = 0;
+static int8_t sm_index = 0;
 
 static bool s_BlinkState = false;
 
 static SM_ENTRY sm[] = {
-	{INIT,		READ_START,			startRead,		READING},
-	
-	{DISPLAY,	READ_START,			startRead,		READING},
-	{DISPLAY,	BTN_UP,				incDigit,		EDIT},
-	{DISPLAY,	BTN_DN,				decDigit,		EDIT},
-	
-	{EDIT,		BTN_UP,				incDigit,		EDIT},
-	{EDIT,		BTN_DN,				decDigit,		EDIT},
-	{EDIT,		BTN_IDLE,			startWrite,		WRITING},
-	
-	{WRITING,	WRITE_COMPLETE,		startRead,		READING},
-	
-	{READING,	READ_COMPLETE,		NULL,			DISPLAY},
+	{ DISPLAY, BTN_UP, incDigit, EDIT },
+	{ DISPLAY, BTN_DIGIT_SELECT, NULL, EDIT },
+
+	{ EDIT, BTN_UP, incDigit, EDIT },
+	{ EDIT, BTN_DIGIT_SELECT, NULL, EDIT },
+	{ EDIT, BTN_IDLE, startWrite, DISPLAY },
+
+	{ WRITING, WRITE_COMPLETE, NULL, DISPLAY },
 };
+
+static UNIX_TIMESTAMP s_unixtime = COMPILE_TIME_INT;
+
+static SEVEN_SEGMENT_MAP map = {
+	0, // A
+	1, // B
+	3, // C
+	4, // D
+	5, // E
+	7, // F
+	6, // G
+	2, // DP
+};
+
+static uint8_t displayMap[10];
+
+static TLC5916_CONTROL tlc =
+{ .sr.shiftOutFn = SR_ShiftOut, .latch = tlcLatchFn, .oe = tlcOEFn };
+
+PCINT_VECTOR_ENUM secondTickVector;
+static bool s_bTick;
 
 int main(void)
 {
@@ -156,16 +205,60 @@ int main(void)
 	MCUSR &= ~(1 << WDRF);
 	wdt_disable();
 
-	sm_index = SM_Init((SM_STATE)INIT, (SM_EVENT)WRITE_COMPLETE, (SM_STATE)READING, sm);
-	
+	setupStateMachine();
+
 	setupTimer();
-	
+
+	setupIO();
+
+	initialiseMap();
+
 	DS3231_Init();
-	
+	I2C_SetPrescaler(64);
+
 	UC_BTN_Init(APP_TICK_MS);
-	
+
+	TLC5916_OutputEnable(&tlc, true);
+
+	uint8_t displayBytes[10] =
+	{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+	TLC5916_ClockOut(displayBytes, 10, &tlc);
+
 	/* All processing interrupt based from here*/
+
 	sei();
+
+	DS3231_SetRate(DS3231_RATE_1HZ);
+	DS3231_SQWINTControl(DS3231_SQW);
+	DS3231_UpdateControl();
+
+	while ( !DS3231_IsIdle() ) { I2C_Task(); }
+
+	/* First get the time from the DS3231.
+	 * Don't worry about the state machine or any events, just get the time
+	 * and see if it's greater than the compile time
+	 */
+
+	DS3231_ReadDeviceDateTime(NULL);
+
+	while ( !DS3231_IsIdle() ) { I2C_Task(); }
+
+	TM tm;
+	DS3231_GetDateTime(&tm);
+
+	s_unixtime = time_to_unix_seconds(&tm);
+
+	if (s_unixtime < COMPILE_TIME_INT)
+	{
+		unix_seconds_to_time(COMPILE_TIME_INT, &tm);
+		DS3231_SetDeviceDateTime(&tm, false, NULL);
+
+		while ( !DS3231_IsIdle() ) { I2C_Task(); }
+
+		s_unixtime = COMPILE_TIME_INT;
+	}
+
+	updateUnixTimeDigits();
 
 	while (true)
 	{
@@ -179,10 +272,18 @@ int main(void)
 			s_BlinkState = !s_BlinkState;
 		}
 
-		if (TMR8_Tick_TestAndClear(&timeSyncTick))
+		if (PCINT_TestAndClear(secondTickVector))
 		{
-			SM_Event(sm_index, READ_START);
+			s_bTick = !s_bTick;
+			if (s_bTick && (SM_GetState(sm_index) == (SM_STATE)DISPLAY))
+			{
+				s_unixtime++;
+				IO_Control(HB_PORT, HB_PIN, IO_TOGGLE);
+				updateUnixTimeDigits();
+			}
 		}
+
+		I2C_Task();
 	}
 
 	return 0;
@@ -191,7 +292,39 @@ int main(void)
 /*
  * Private Functions
  */
- 
+
+static void initialiseMap(void)
+{
+	uint8_t i;
+
+	for (i = 0; i < 10; ++i)
+	{
+		displayMap[i] = SSEG_CreateDigit(i, &map, true);
+		SSEG_AddDecimal(&displayMap[i], &map, false);
+	}
+}
+
+static void setupIO(void)
+{
+	IO_SetMode(HB_PORT, HB_PIN, IO_MODE_OUTPUT);
+
+	IO_SetMode(eUP_PORT, UP_PIN, IO_MODE_PULLUPINPUT);
+	IO_SetMode(eDIGIT_PORT, DIGIT_PIN, IO_MODE_PULLUPINPUT);
+
+	IO_SetMode(eTLC_DATA_PORT, TLC_DATA_PIN, IO_MODE_OUTPUT);
+	IO_SetMode(eTLC_CLK_PORT, TLC_CLK_PIN, IO_MODE_OUTPUT);
+	IO_SetMode(eTLC_OE_PORT, TLC_OE_PIN, IO_MODE_OUTPUT);
+	IO_SetMode(eTLC_LATCH_PORT, TLC_LATCH_PIN, IO_MODE_OUTPUT);
+
+	IO_SetMode(I2C_SCL_PORT, I2C_SCL_PIN, IO_MODE_I2C_PULLUP);
+	IO_SetMode(I2C_SDA_PORT, I2C_SDA_PIN, IO_MODE_I2C_PULLUP);
+
+	IO_SetMode(SECOND_TICK_PORT, SECOND_TICK_PIN, IO_MODE_PULLUPINPUT);
+	secondTickVector = PCINT_EnableInterrupt(SECOND_TICK_PCINT, true);
+
+	SR_Init(SFRP(TLC_DATA_PORT), TLC_DATA_PIN, SFRP(TLC_CLK_PORT), TLC_CLK_PIN);
+}
+
 static void setupTimer(void)
 {
 	CLK_Init(0);
@@ -204,36 +337,29 @@ static void setupTimer(void)
 	heartbeatTick.reload = BLINK_TICK_MS;
 	heartbeatTick.active = true;
 	TMR8_Tick_AddTimerConfig(&heartbeatTick);
+}
 
-	timeSyncTick.reload = SYNC_TICK_MS;
-	timeSyncTick.active = true;
-	TMR8_Tick_AddTimerConfig(&timeSyncTick);
+static void setupStateMachine(void)
+{
+	SMM_Config(1, 3);
+	sm_index = SM_Init((SM_STATE)DISPLAY, (SM_EVENT)WRITE_COMPLETE, (SM_STATE)WRITING, sm);
+	SM_SetActive(sm_index, true);
 }
 
 static void applicationTick(void)
 {
-	BTN_STATE_ENUM up = IO_Read(UP_PORT, UP_PIN); // Read up button state;
-	BTN_STATE_ENUM dn = IO_Read(DN_PORT, DN_PIN); // Read dn button state;
-	BTN_STATE_ENUM digit = IO_Read(DIGIT_PORT, DIGIT_PIN); // Read digit button state;
-	
-	UC_BTN_Tick(up, dn, digit);
-	
-	if (SM_GetState(sm_index) == DISPLAY)
-	{
-		updateUnixTimeDigits();
-	}
-	
-	updateDisplay();
 
+	BTN_STATE_ENUM up = IO_Read(UP_PINS, UP_PIN); // Read up button state;
+	BTN_STATE_ENUM digit = IO_Read(DIGIT_PINS, DIGIT_PIN); // Read digit button state;
+
+	UC_BTN_Tick(up, digit);
+
+	updateDisplay();
 }
 
 static void onChronodotUpdate(bool write)
 {
 	if (write)
-	{
-		SM_Event(sm_index, READ_COMPLETE);
-	}
-	else
 	{
 		SM_Event(sm_index, WRITE_COMPLETE);
 	}
@@ -241,88 +367,81 @@ static void onChronodotUpdate(bool write)
 
 static void updateUnixTimeDigits(void)
 {
-	// Read from ChronoDot registers
-	TM tm;
-	DS3231_GetDateTime(&tm);
-
-	uint32_t time = time_to_unix_seconds(&tm);
+	uint32_t time = s_unixtime;
 	int8_t i;
 	uint32_t divisor = 1000000000;
-	
+
 	for (i = 0; i < 10; ++i)
 	{
 		unixTimeDigits[i] = time / divisor;
 		time -= unixTimeDigits[i] * divisor;
 		divisor = divisor / 10;
 	}
-	
-	SM_Event(sm_index, READ_COMPLETE);
-	
 }
 
 static void updateDisplay(void)
 {
-	uint8_t digit = 0;
-	
-	for (digit = 0; digit < 10; ++digit)
+	uint8_t place = 0;
+	uint8_t displayBytes[10] =
+	{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+	for (place = 0; place < 10; ++place)
 	{
-		if ((int8_t)digit == UC_SelectedDigit())
+		displayBytes[place] = displayMap[unixTimeDigits[place]];
+		if ((int8_t) place == UC_SelectedDigit())
 		{
 			if (s_BlinkState)
 			{
-				//TODO: Blank this digit
+				displayBytes[place] = 0;
 			}
 		}
-		//TODO: write out to shift registers
 	}
-}
 
-static void startRead(void)
-{
-	DS3231_ReadDateTime(onChronodotUpdate);
+	TLC5916_ClockOut(displayBytes, 10, &tlc);
 }
 
 static void startWrite(void)
 {
-	TM tm;
-	
-	uint32_t time = 0;
+	static TM tm;
+
+	UNIX_TIMESTAMP time = 0;
 	int8_t i;
 	uint32_t multiplier = 1000000000;
-	
+
 	for (i = 0; i < 10; ++i)
 	{
 		time += (unixTimeDigits[i] * multiplier);
 		multiplier = multiplier / 10;
 	}
-	
+
+	s_unixtime = time;
+
 	unix_seconds_to_time(time, &tm);
-	
-	DS3231_SetDateTime(&tm, false, onChronodotUpdate);
+
+	DS3231_SetDeviceDateTime(&tm, false, onChronodotUpdate);
 }
 
 static void incDigit(void)
 {
 	int8_t thisDigit = UC_SelectedDigit();
-	
-	if (thisDigit == NO_DIGIT) { return; }
-	
+
+	if (thisDigit == NO_DIGIT)
+	{
+		return;
+	}
+
 	incrementwithrollover(unixTimeDigits[thisDigit], 9);
 }
 
-static void decDigit(void)
-{
-	int8_t thisDigit = UC_SelectedDigit();
-	
-	if (thisDigit == NO_DIGIT) { return; }
-	
-	decrementwithrollover(unixTimeDigits[thisDigit], 9);
-}
-
 /* Button Functions */
+
 void UC_SelectDigit(int8_t selectedDigit)
 {
-	if (selectedDigit == NO_DIGIT)
+	if (selectedDigit != NO_DIGIT)
+	{
+		SM_Event(sm_index, BTN_DIGIT_SELECT);
+	}
+	else
 	{
 		SM_Event(sm_index, BTN_IDLE);
 	}
@@ -330,12 +449,17 @@ void UC_SelectDigit(int8_t selectedDigit)
 
 void UC_IncrementDigit(int8_t selectedDigit)
 {
-	(void)selectedDigit;
+	(void) selectedDigit;
 	SM_Event(sm_index, BTN_UP);
 }
 
-void UC_DecrementDigit(int8_t selectedDigit)
+/* IO functions for TLC5916 */
+static void tlcOEFn(bool on)
 {
-	(void)selectedDigit;
-	SM_Event(sm_index, BTN_DN);
+	on ? IO_On(TLC_OE_PORT, TLC_OE_PIN) : IO_Off(TLC_OE_PORT, TLC_OE_PIN);
+}
+static void tlcLatchFn(bool on)
+{
+	on ? IO_On(TLC_LATCH_PORT, TLC_LATCH_PIN) :
+			IO_Off(TLC_LATCH_PORT, TLC_LATCH_PIN);
 }
