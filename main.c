@@ -56,6 +56,7 @@
  * AVR Library Includes
  */
 
+#include "lib_io.h"
 #include "lib_i2c_common.h"
 #include "lib_i2c_config.h"
 #include "lib_clk.h"
@@ -147,8 +148,8 @@ static void onChronodotUpdate(bool write);
 static void updateUnixTimeDigits(void);
 static void updateDisplay(void);
 
-static void startWrite(void);
-static void incDigit(void);
+static void startWrite(SM_STATEID old, SM_STATEID new, SM_EVENT e);
+static void incDigit(SM_STATEID old, SM_STATEID new, SM_EVENT e);
 
 static void tlcOEFn(bool on);
 static void tlcLatchFn(bool on);
@@ -166,15 +167,19 @@ static int8_t sm_index = 0;
 
 static bool s_BlinkState = false;
 
+static const SM_STATE s_stateDisplay = {DISPLAY, NULL, NULL};
+static const SM_STATE s_stateEdit = {EDIT, NULL, NULL};
+static const SM_STATE s_stateWriting = {WRITING, NULL, NULL};
+
 static SM_ENTRY sm[] = {
-	{ DISPLAY, BTN_UP, incDigit, EDIT },
-	{ DISPLAY, BTN_DIGIT_SELECT, NULL, EDIT },
+	{ &s_stateDisplay, BTN_UP, incDigit, &s_stateEdit },
+	{ &s_stateDisplay, BTN_DIGIT_SELECT, NULL, &s_stateEdit },
 
-	{ EDIT, BTN_UP, incDigit, EDIT },
-	{ EDIT, BTN_DIGIT_SELECT, NULL, EDIT },
-	{ EDIT, BTN_IDLE, startWrite, DISPLAY },
+	{ &s_stateEdit, BTN_UP, incDigit, &s_stateEdit },
+	{ &s_stateEdit, BTN_DIGIT_SELECT, NULL, &s_stateEdit },
+	{ &s_stateEdit, BTN_IDLE, startWrite, &s_stateWriting },
 
-	{ WRITING, WRITE_COMPLETE, NULL, DISPLAY },
+	{ &s_stateWriting, WRITE_COMPLETE, NULL, &s_stateDisplay },
 };
 
 static UNIX_TIMESTAMP s_unixtime = COMPILE_TIME_INT;
@@ -192,8 +197,7 @@ static SEVEN_SEGMENT_MAP map = {
 
 static uint8_t displayMap[10];
 
-static TLC5916_CONTROL tlc =
-{ .sr.shiftOutFn = SR_ShiftOut, .latch = tlcLatchFn, .oe = tlcOEFn };
+static TLC5916_CONTROL tlc;
 
 PCINT_VECTOR_ENUM secondTickVector;
 static bool s_bTick;
@@ -217,6 +221,8 @@ int main(void)
 	I2C_SetPrescaler(64);
 
 	UC_BTN_Init(APP_TICK_MS);
+
+	TLC5916_Init(&tlc, SR_ShiftOut, tlcLatchFn, tlcOEFn);
 
 	TLC5916_OutputEnable(&tlc, true);
 
@@ -275,7 +281,7 @@ int main(void)
 		if (PCINT_TestAndClear(secondTickVector))
 		{
 			s_bTick = !s_bTick;
-			if (s_bTick && (SM_GetState(sm_index) == (SM_STATE)DISPLAY))
+			if (s_bTick && (SM_GetState(sm_index) == (SM_STATEID)DISPLAY))
 			{
 				s_unixtime++;
 				IO_Control(HB_PORT, HB_PIN, IO_TOGGLE);
@@ -342,7 +348,7 @@ static void setupTimer(void)
 static void setupStateMachine(void)
 {
 	SMM_Config(1, 3);
-	sm_index = SM_Init((SM_STATE)DISPLAY, (SM_EVENT)WRITE_COMPLETE, (SM_STATE)WRITING, sm);
+	sm_index = SM_Init(&s_stateDisplay, (SM_EVENT)WRITE_COMPLETE, (SM_STATEID)WRITING, sm);
 	SM_SetActive(sm_index, true);
 }
 
@@ -400,8 +406,9 @@ static void updateDisplay(void)
 	TLC5916_ClockOut(displayBytes, 10, &tlc);
 }
 
-static void startWrite(void)
+static void startWrite(SM_STATEID old, SM_STATEID new, SM_EVENT e)
 {
+	(void)old; (void)new; (void)e;
 	static TM tm;
 
 	UNIX_TIMESTAMP time = 0;
@@ -421,8 +428,9 @@ static void startWrite(void)
 	DS3231_SetDeviceDateTime(&tm, false, onChronodotUpdate);
 }
 
-static void incDigit(void)
+static void incDigit(SM_STATEID old, SM_STATEID new, SM_EVENT e)
 {
+	(void)old; (void)new; (void)e;
 	int8_t thisDigit = UC_SelectedDigit();
 
 	if (thisDigit == NO_DIGIT)
