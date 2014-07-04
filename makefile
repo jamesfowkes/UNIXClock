@@ -6,7 +6,7 @@ CC=$(AVR_DIR)/avr-gcc
 MCU_TARGET=atmega328p
 LIBS_DIR = $(PROJECTS_PATH)\Libs
 
-DEL = python $(PROJECTS_PATH)\Libs\del.py
+DEL = python $(LIBS_DIR)\del.py
 
 OPT_LEVEL=3
 
@@ -26,49 +26,50 @@ CFILES = \
 	$(LIBS_DIR)/Utility/util_bcd.c \
 	$(LIBS_DIR)/AVR/lib_clk.c \
 	$(LIBS_DIR)/AVR/lib_fuses.c \
+	$(LIBS_DIR)/AVR/lib_io.c \
+	$(LIBS_DIR)/AVR/lib_pcint.c \
 	$(LIBS_DIR)/AVR/lib_tmr8.c \
 	$(LIBS_DIR)/AVR/lib_tmr8_tick.c \
 	$(LIBS_DIR)/AVR/lib_i2c.c \
 	$(LIBS_DIR)/AVR/lib_i2c_mt.c \
 	$(LIBS_DIR)/AVR/lib_i2c_mr.c \
+	$(LIBS_DIR)/AVR/lib_shiftregister.c \
 	$(LIBS_DIR)/Devices/lib_ds3231.c \
+	$(LIBS_DIR)/Devices/lib_tlc5916.c \
 	$(LIBS_DIR)/Generics/button.c \
-	$(LIBS_DIR)/Generics/task.c \
 	$(LIBS_DIR)/Generics/ringbuf.c \
-	$(LIBS_DIR)/Generics/statemachine_common.c \
-	$(LIBS_DIR)/Generics/statemachine_static.c \
-	$(LIBS_DIR)/Generics/statemachine.c \
+	$(LIBS_DIR)/Generics/seven_segment_map.c \
+	$(LIBS_DIR)/Generics/memorypool.c \
+	$(LIBS_DIR)/Generics/statemachinemanager.c \
+	$(LIBS_DIR)/Generics/statemachine.c
 
 OPTS = \
 	-g \
 	-Wall \
 	-Wextra \
+	-std=c99 \
 	-DF_CPU=8000000 \
 	-DMAX_EVENT_QUEUE=2 \
 	-DNUM_STATE_MACHINES=1 \
-	-DUNIX_TIME_TYPE=int32_t
+	-DUNIX_TIME_TYPE=int32_t \
+	-DMEMORY_POOL_BYTES=256
 
 LDFLAGS = \
 	-Wl
 
 OBJDEPS=$(CFILES:.c=.o)
 
-all: init $(NAME).elf errors
+all: init $(NAME).elf
 
 init:
-	DEL $(ERROR_FILE)
 	python $(LIBS_DIR)\compiletime.py 
 	
 $(NAME).elf: $(OBJDEPS)
 	$(CC) $(INCLUDE_DIRS) $(OPTS) $(LDFLAGS) -O$(OPT_LEVEL) -mmcu=$(MCU_TARGET) -o $@ $^
 
 %.o:%.c
-	$(CC) $(INCLUDE_DIRS) $(OPTS) -O$(OPT_LEVEL) -mmcu=$(MCU_TARGET) -c $< -o $@ 2>>$(ERROR_FILE)
-
-errors:
-	@echo "Errors and Warnings:"
-	@cat $(ERROR_FILE)
+	$(CC) $(INCLUDE_DIRS) $(OPTS) -O$(OPT_LEVEL) -mmcu=$(MCU_TARGET) -c $< -o $@
 	
 clean:
-	DEL $(NAME).elf
-	DEL $(OBJDEPS)
+	$(DEL) $(NAME).elf $(OBJDEPS)
+	
