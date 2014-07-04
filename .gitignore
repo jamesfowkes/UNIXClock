@@ -4,6 +4,7 @@
 *.hex
 *.elf
 error.txt
+compiletime.h
 
 #LUFA Library
 LUFA/*
