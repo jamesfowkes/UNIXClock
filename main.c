@@ -117,22 +117,6 @@
 #define SECOND_TICK_PIN 6
 #define SECOND_TICK_PCINT 22
 
-enum states
-{
-	DISPLAY, EDIT, WRITING, MAX_STATES
-};
-typedef enum states STATES;
-
-enum events
-{
-	BTN_DIGIT_SELECT,
-	BTN_UP,
-	BTN_IDLE,
-	WRITE_COMPLETE,
-	MAX_EVENTS
-};
-typedef enum events EVENTS;
-
 /*
  * Function Prototypes
  */
@@ -166,25 +150,33 @@ static TMR8_TICK_CONFIG heartbeatTick;
 
 static uint8_t unixTimeDigits[10] = COMPILE_TIME_DIGITS;
 
-static int8_t sm_index = 0;
-
 static bool s_displayDirty = false;
 static bool s_BlinkState = false;
 
-static const SM_STATE s_stateDisplay = {DISPLAY, NULL, NULL};
-static const SM_STATE s_stateEdit = {EDIT, NULL, NULL};
-static const SM_STATE s_stateWriting = {WRITING, NULL, NULL};
+/* Application state machine */
+DEFINE_SM_STATES(DISPLAY, EDIT, WRITING);
+DEFINE_SM_EVENTS(BTN_DIGIT_SELECT, BTN_UP, BTN_IDLE, WRITE_COMPLETE);
 
-static const SM_ENTRY sm[] = {
-	{ &s_stateDisplay, BTN_UP, incDigit, &s_stateEdit },
-	{ &s_stateDisplay, BTN_DIGIT_SELECT, NULL, &s_stateEdit },
-
-	{ &s_stateEdit, BTN_UP, incDigit, &s_stateEdit },
-	{ &s_stateEdit, BTN_DIGIT_SELECT, NULL, &s_stateEdit },
-	{ &s_stateEdit, BTN_IDLE, startWrite, &s_stateWriting },
-
-	{ &s_stateWriting, WRITE_COMPLETE, NULL, &s_stateDisplay },
+DEFINE_STATES(sm) = {
+	{DISPLAY, NULL, NULL},
+	{EDIT, NULL, NULL},
+	{WRITING, NULL, NULL}
 };
+
+DEFINE_STATE_TRANSITIONS(sm) = {
+	STATE_TRANSITION(sm, DISPLAY, BTN_UP, incDigit, EDIT ),
+	STATE_TRANSITION(sm, DISPLAY, BTN_DIGIT_SELECT, NULL, EDIT ),
+
+	STATE_TRANSITION(sm, EDIT, BTN_UP, incDigit, EDIT ),
+	STATE_TRANSITION(sm, EDIT, BTN_DIGIT_SELECT, NULL, EDIT ),
+	STATE_TRANSITION(sm, EDIT, BTN_IDLE, startWrite, WRITING ),
+
+	STATE_TRANSITION(sm, WRITING, WRITE_COMPLETE, NULL, DISPLAY ),
+};
+
+DEFINE_STATE_MACHINE(sm, DISPLAY);
+
+/* END spplication state machine */
 
 static UNIX_TIMESTAMP s_unixtime = COMPILE_TIME_INT;
 
@@ -293,14 +285,14 @@ int main(void)
 		if (PCINT_TestAndClear(secondTickVector))
 		{
 			s_bTick = !s_bTick;
-			if (s_bTick && (SM_GetState(sm_index) == (SM_STATEID)DISPLAY))
+			if (s_bTick && (SM_GetState(&sm) == (SM_STATEID)DISPLAY))
 			{
 				s_unixtime++;
 				updateUnixTimeDigits();
 				s_displayDirty |= true;
 			}
 			
-			for(uint8_t i = 0; i < (uint8_t)SM_GetState(sm_index); ++i)
+			for(uint8_t i = 0; i < (uint8_t)SM_GetState(&sm); ++i)
 			{
 				//IO_Control(HB_PORT, HB_PIN, IO_OFF);
 				//IO_Control(HB_PORT, HB_PIN, IO_ON);
@@ -370,8 +362,8 @@ static void setupTimer(void)
 static void setupStateMachine(void)
 {
 	SMM_Config(1, 3);
-	sm_index = SM_Init(&s_stateDisplay, (SM_EVENT)MAX_EVENTS, (SM_STATEID)MAX_STATES, sm);
-	SM_SetActive(sm_index, true);
+	SM_Init(&sm);
+	SM_SetActive(&sm, true);
 }
 
 static void applicationTick(void)
@@ -387,7 +379,7 @@ static void onChronodotUpdate(bool write)
 {
 	if (write)
 	{
-		SM_Event(sm_index, WRITE_COMPLETE);
+		SM_Event(&sm, WRITE_COMPLETE);
 	}
 }
 
@@ -483,11 +475,11 @@ void UC_SelectDigit(int8_t selectedDigit)
 {
 	if (selectedDigit != NO_DIGIT)
 	{
-		SM_Event(sm_index, BTN_DIGIT_SELECT);
+		SM_Event(&sm, BTN_DIGIT_SELECT);
 	}
 	else
 	{
-		SM_Event(sm_index, BTN_IDLE);
+		SM_Event(&sm, BTN_IDLE);
 	}
 	s_displayDirty |= true;
 }
@@ -495,7 +487,7 @@ void UC_SelectDigit(int8_t selectedDigit)
 void UC_IncrementDigit(int8_t selectedDigit)
 {
 	(void) selectedDigit;
-	SM_Event(sm_index, BTN_UP);
+	SM_Event(&sm, BTN_UP);
 }
 
 /* IO functions for TLC5916 */
