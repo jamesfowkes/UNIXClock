@@ -63,6 +63,7 @@
 #include "lib_tmr8_tick.h"
 #include "lib_shiftregister.h"
 #include "lib_pcint.h"
+#include "lib_uart.h"
 
 #include "util_bcd.h"
 
@@ -77,7 +78,7 @@
  * Private Defines and Datatypes
  */
 
-#define APP_TICK_MS 10
+#define APP_TICK_MS BUTTON_SCAN_PERIOD_MS
 #define BLINK_TICK_MS 300
 
 // Button input
@@ -89,8 +90,8 @@
 #define DIGIT_PINS PINB
 #define DIGIT_PIN 1
 
-#define HB_PORT IO_PORTB
-#define HB_PIN 5
+#define HB_PORT IO_PORTC
+#define HB_PIN 0
 
 // i2c pins
 #define I2C_SCL_PORT	IO_PORTC
@@ -101,16 +102,16 @@
 // Shift register clock and data
 #define TLC_DATA_PORT PORTD
 #define eTLC_DATA_PORT IO_PORTD
-#define TLC_DATA_PIN 4
+#define TLC_DATA_PIN 3
 #define TLC_CLK_PORT PORTD
 #define eTLC_CLK_PORT IO_PORTD
-#define TLC_CLK_PIN 5
+#define TLC_CLK_PIN 2
 #define TLC_LATCH_PORT PORTD
 #define eTLC_LATCH_PORT IO_PORTD
-#define TLC_LATCH_PIN 3
+#define TLC_LATCH_PIN 4
 #define TLC_OE_PORT PORTD
 #define eTLC_OE_PORT IO_PORTD
-#define TLC_OE_PIN 2
+#define TLC_OE_PIN 5
 
 #define SECOND_TICK_PORT IO_PORTD
 #define SECOND_TICK_PIN 6
@@ -118,7 +119,7 @@
 
 enum states
 {
-	DISPLAY, EDIT, WRITING
+	DISPLAY, EDIT, WRITING, MAX_STATES
 };
 typedef enum states STATES;
 
@@ -127,8 +128,8 @@ enum events
 	BTN_DIGIT_SELECT,
 	BTN_UP,
 	BTN_IDLE,
-	WRITE_START,
-	WRITE_COMPLETE
+	WRITE_COMPLETE,
+	MAX_EVENTS
 };
 typedef enum events EVENTS;
 
@@ -148,6 +149,8 @@ static void onChronodotUpdate(bool write);
 static void updateUnixTimeDigits(void);
 static void updateDisplay(void);
 
+void putTimeToUART(void);
+
 static void startWrite(SM_STATEID old, SM_STATEID new, SM_EVENT e);
 static void incDigit(SM_STATEID old, SM_STATEID new, SM_EVENT e);
 
@@ -165,13 +168,14 @@ static uint8_t unixTimeDigits[10] = COMPILE_TIME_DIGITS;
 
 static int8_t sm_index = 0;
 
+static bool s_displayDirty = false;
 static bool s_BlinkState = false;
 
 static const SM_STATE s_stateDisplay = {DISPLAY, NULL, NULL};
 static const SM_STATE s_stateEdit = {EDIT, NULL, NULL};
 static const SM_STATE s_stateWriting = {WRITING, NULL, NULL};
 
-static SM_ENTRY sm[] = {
+static const SM_ENTRY sm[] = {
 	{ &s_stateDisplay, BTN_UP, incDigit, &s_stateEdit },
 	{ &s_stateDisplay, BTN_DIGIT_SELECT, NULL, &s_stateEdit },
 
@@ -202,10 +206,13 @@ static TLC5916_CONTROL tlc;
 PCINT_VECTOR_ENUM secondTickVector;
 static bool s_bTick;
 
+static TM tm;
+static TM compile_time = COMPILE_TIME_STRUCT;
 int main(void)
 {
 
 	/* Disable watchdog: not required for this application */
+
 	MCUSR &= ~(1 << WDRF);
 	wdt_disable();
 
@@ -217,8 +224,10 @@ int main(void)
 
 	initialiseMap();
 
-	DS3231_Init();
+	UART_Init(UART0, 9600, 32, 32, false);
+
 	I2C_SetPrescaler(64);
+	DS3231_Init();
 
 	UC_BTN_Init(APP_TICK_MS);
 
@@ -226,19 +235,12 @@ int main(void)
 
 	TLC5916_OutputEnable(&tlc, true);
 
-	uint8_t displayBytes[10] =
-	{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+	uint8_t displayBytes[10] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 	TLC5916_ClockOut(displayBytes, 10, &tlc);
 
-	/* All processing interrupt based from here*/
-
+	/* All processing interrupt based from here */
+	
 	sei();
-
-	DS3231_SetRate(DS3231_RATE_1HZ);
-	DS3231_SQWINTControl(DS3231_SQW);
-	DS3231_UpdateControl();
-
-	while ( !DS3231_IsIdle() ) { I2C_Task(); }
 
 	/* First get the time from the DS3231.
 	 * Don't worry about the state machine or any events, just get the time
@@ -248,26 +250,35 @@ int main(void)
 	DS3231_ReadDeviceDateTime(NULL);
 
 	while ( !DS3231_IsIdle() ) { I2C_Task(); }
-
-	TM tm;
 	DS3231_GetDateTime(&tm);
+
+	DS3231_SetRate(DS3231_RATE_1HZ);
+	DS3231_SQWINTControl(DS3231_SQW);
+	DS3231_UpdateControl();
+
+	while ( !DS3231_IsIdle() ) { I2C_Task(); }
 
 	s_unixtime = time_to_unix_seconds(&tm);
 
 	if (s_unixtime < COMPILE_TIME_INT)
 	{
-		unix_seconds_to_time(COMPILE_TIME_INT, &tm);
-		DS3231_SetDeviceDateTime(&tm, false, NULL);
+		TM compile_time = COMPILE_TIME_STRUCT;
+		DS3231_SetDeviceDateTime(&compile_time, false, NULL);
 
 		while ( !DS3231_IsIdle() ) { I2C_Task(); }
 
 		s_unixtime = COMPILE_TIME_INT;
 	}
-
+	
 	updateUnixTimeDigits();
-
+	
+	//putTimeToUART();
+	
+	s_displayDirty = true;
+	
 	while (true)
 	{
+		
 		if (TMR8_Tick_TestAndClear(&appTick))
 		{
 			applicationTick();
@@ -276,6 +287,7 @@ int main(void)
 		if (TMR8_Tick_TestAndClear(&heartbeatTick))
 		{
 			s_BlinkState = !s_BlinkState;
+			s_displayDirty |= true;
 		}
 
 		if (PCINT_TestAndClear(secondTickVector))
@@ -284,15 +296,25 @@ int main(void)
 			if (s_bTick && (SM_GetState(sm_index) == (SM_STATEID)DISPLAY))
 			{
 				s_unixtime++;
-				IO_Control(HB_PORT, HB_PIN, IO_TOGGLE);
 				updateUnixTimeDigits();
+				s_displayDirty |= true;
 			}
+			
+			for(uint8_t i = 0; i < (uint8_t)SM_GetState(sm_index); ++i)
+			{
+				//IO_Control(HB_PORT, HB_PIN, IO_OFF);
+				//IO_Control(HB_PORT, HB_PIN, IO_ON);
+			}
+		}
+		
+		if (s_displayDirty)
+		{
+			updateDisplay();
+			s_displayDirty |= false;
 		}
 
 		I2C_Task();
 	}
-
-	return 0;
 }
 
 /*
@@ -348,7 +370,7 @@ static void setupTimer(void)
 static void setupStateMachine(void)
 {
 	SMM_Config(1, 3);
-	sm_index = SM_Init(&s_stateDisplay, (SM_EVENT)WRITE_COMPLETE, (SM_STATEID)WRITING, sm);
+	sm_index = SM_Init(&s_stateDisplay, (SM_EVENT)MAX_EVENTS, (SM_STATEID)MAX_STATES, sm);
 	SM_SetActive(sm_index, true);
 }
 
@@ -359,8 +381,6 @@ static void applicationTick(void)
 	BTN_STATE_ENUM digit = IO_Read(DIGIT_PINS, DIGIT_PIN); // Read digit button state;
 
 	UC_BTN_Tick(up, digit);
-
-	updateDisplay();
 }
 
 static void onChronodotUpdate(bool write)
@@ -409,7 +429,6 @@ static void updateDisplay(void)
 static void startWrite(SM_STATEID old, SM_STATEID new, SM_EVENT e)
 {
 	(void)old; (void)new; (void)e;
-	static TM tm;
 
 	UNIX_TIMESTAMP time = 0;
 	int8_t i;
@@ -439,6 +458,23 @@ static void incDigit(SM_STATEID old, SM_STATEID new, SM_EVENT e)
 	}
 
 	incrementwithrollover(unixTimeDigits[thisDigit], 9);
+	s_displayDirty |= true;
+}
+
+void putTimeToUART(void)
+{
+	UART_PutChar(UART0, compile_time.tm_sec);
+	UART_PutChar(UART0, tm.tm_sec);
+	UART_PutChar(UART0, compile_time.tm_min);
+	UART_PutChar(UART0, tm.tm_min);
+	UART_PutChar(UART0, compile_time.tm_hour);
+	UART_PutChar(UART0, tm.tm_hour);
+	UART_PutChar(UART0, compile_time.tm_mday);
+	UART_PutChar(UART0, tm.tm_mday);
+	UART_PutChar(UART0, compile_time.tm_mon+1);
+	UART_PutChar(UART0, tm.tm_mon+1);
+	UART_PutChar(UART0, compile_time.tm_year);
+	UART_PutChar(UART0, tm.tm_year);	
 }
 
 /* Button Functions */
@@ -453,6 +489,7 @@ void UC_SelectDigit(int8_t selectedDigit)
 	{
 		SM_Event(sm_index, BTN_IDLE);
 	}
+	s_displayDirty |= true;
 }
 
 void UC_IncrementDigit(int8_t selectedDigit)
@@ -462,6 +499,7 @@ void UC_IncrementDigit(int8_t selectedDigit)
 }
 
 /* IO functions for TLC5916 */
+
 static void tlcOEFn(bool on)
 {
 	on ? IO_On(TLC_OE_PORT, TLC_OE_PIN) : IO_Off(TLC_OE_PORT, TLC_OE_PIN);
@@ -471,3 +509,4 @@ static void tlcLatchFn(bool on)
 	on ? IO_On(TLC_LATCH_PORT, TLC_LATCH_PIN) :
 			IO_Off(TLC_LATCH_PORT, TLC_LATCH_PIN);
 }
+

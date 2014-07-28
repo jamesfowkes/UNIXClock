@@ -5,7 +5,7 @@
  * Defines and Typedefs
  */
 
-#define BUTTON_SCAN_PERIOD_MS (10)
+#define BUTTON_SCAN_PERIOD_MS (25)
 
 #define NUM_DIGITS (10)
 #define MAX_DIGIT_INDEX (NUM_DIGITS-1)

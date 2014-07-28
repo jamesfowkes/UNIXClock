@@ -1,23 +1,9 @@
-NAME=test
+include $(PROJECTS_PATH)/Libs/standard.mk
 
-AVR_DIR=C:/WinAVR-20100110/bin
+NAME=UNIXClock
 
-CC=$(AVR_DIR)/avr-gcc
 MCU_TARGET=atmega328p
-LIBS_DIR = $(PROJECTS_PATH)\Libs
-
-DEL = python $(LIBS_DIR)\del.py
-
-OPT_LEVEL=3
-
-ERROR_FILE="error.txt"
-
-INCLUDE_DIRS = \
-	-I$(LIBS_DIR)/AVR \
-	-I$(LIBS_DIR)/Common \
-	-I$(LIBS_DIR)/Devices \
-	-I$(LIBS_DIR)/Generics \
-	-I$(LIBS_DIR)/Utility
+AVRDUDE_PART=m328p
 
 CFILES = \
 	main.c \
@@ -30,46 +16,29 @@ CFILES = \
 	$(LIBS_DIR)/AVR/lib_pcint.c \
 	$(LIBS_DIR)/AVR/lib_tmr8.c \
 	$(LIBS_DIR)/AVR/lib_tmr8_tick.c \
-	$(LIBS_DIR)/AVR/lib_i2c.c \
-	$(LIBS_DIR)/AVR/lib_i2c_mt.c \
-	$(LIBS_DIR)/AVR/lib_i2c_mr.c \
-	$(LIBS_DIR)/AVR/lib_shiftregister.c \
-	$(LIBS_DIR)/Devices/lib_ds3231.c \
-	$(LIBS_DIR)/Devices/lib_tlc5916.c \
+	$(LIBS_DIR)/Generics/memorypool.c \
 	$(LIBS_DIR)/Generics/button.c \
+	$(LIBS_DIR)/AVR/lib_shiftregister.c \
+	$(LIBS_DIR)/AVR/lib_uart.c \
+	$(LIBS_DIR)/Devices/lib_tlc5916.c \
 	$(LIBS_DIR)/Generics/ringbuf.c \
 	$(LIBS_DIR)/Generics/seven_segment_map.c \
-	$(LIBS_DIR)/Generics/memorypool.c \
 	$(LIBS_DIR)/Generics/statemachinemanager.c \
-	$(LIBS_DIR)/Generics/statemachine.c
+	$(LIBS_DIR)/Generics/statemachine.c \
+	$(LIBS_DIR)/AVR/lib_i2c.c \
+	$(LIBS_DIR)/Common/lib_i2c.c \
+	$(LIBS_DIR)/Common/lib_i2c_mt.c \
+	$(LIBS_DIR)/Common/lib_i2c_mr.c \
+	$(LIBS_DIR)/Devices/lib_ds3231.c
 
-OPTS = \
-	-g \
-	-Wall \
-	-Wextra \
-	-std=c99 \
+EXTRA_FLAGS = \
 	-DF_CPU=8000000 \
+	-DUNIX_TIME_TYPE=int32_t \
+	-DMEMORY_POOL_BYTES=512 \
 	-DMAX_EVENT_QUEUE=2 \
 	-DNUM_STATE_MACHINES=1 \
-	-DUNIX_TIME_TYPE=int32_t \
-	-DMEMORY_POOL_BYTES=256
+	-DI2C_MT \
+	-DI2C_MR
 
-LDFLAGS = \
-	-Wl
+include $(LIBS_DIR)/AVR/make_avr.mk
 
-OBJDEPS=$(CFILES:.c=.o)
-
-all: init $(NAME).elf
-
-init:
-	python $(LIBS_DIR)\compiletime.py 
-	
-$(NAME).elf: $(OBJDEPS)
-	$(CC) $(INCLUDE_DIRS) $(OPTS) $(LDFLAGS) -O$(OPT_LEVEL) -mmcu=$(MCU_TARGET) -o $@ $^
-
-%.o:%.c
-	$(CC) $(INCLUDE_DIRS) $(OPTS) -O$(OPT_LEVEL) -mmcu=$(MCU_TARGET) -c $< -o $@
-	
-clean:
-	$(DEL) $(NAME).elf $(OBJDEPS)
-	
